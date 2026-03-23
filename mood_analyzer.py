@@ -9,6 +9,7 @@ This class starts with very simple logic:
   - Convert that score into a mood label
 """
 
+import re
 from typing import List, Dict, Tuple, Optional
 
 from dataset import POSITIVE_WORDS, NEGATIVE_WORDS
@@ -40,20 +41,45 @@ class MoodAnalyzer:
         """
         Convert raw text into a list of tokens the model can work with.
 
-        TODO: Improve this method.
-
-        Right now, it does the minimum:
-          - Strips leading and trailing whitespace
-          - Converts everything to lowercase
-          - Splits on spaces
-
-        Ideas to improve:
-          - Remove punctuation
-          - Handle simple emojis separately (":)", ":-(", "🥲", "😂")
-          - Normalize repeated characters ("soooo" -> "soo")
+        Steps applied in order:
+          1. Replace text emoticons (":)", ":-(") with sentiment words
+          2. Replace common emojis with sentiment words
+          3. Lowercase everything
+          4. Normalize repeated characters ("soooo" -> "soo")
+          5. Remove punctuation
+          6. Split on whitespace and drop empty tokens
         """
-        cleaned = text.strip().lower()
-        tokens = cleaned.split()
+        # 1. Text emoticons → sentiment words
+        emoticon_map = {
+            ":)": "happy", ":-)": "happy", ":D": "happy", "=)": "happy",
+            ":(": "sad",   ":-(": "sad",   ":/": "sad",
+        }
+        for emoticon, replacement in emoticon_map.items():
+            text = text.replace(emoticon, f" {replacement} ")
+
+        # 2. Unicode emojis → sentiment words (unrecognized emojis are dropped in step 5)
+        emoji_map = {
+            "😊": "happy",  "😀": "happy",  "😁": "happy",  "🙌": "happy",
+            "✨": "happy",  "❤️": "love",   "💕": "love",   "😂": "happy",
+            "🤣": "happy",  "🥹": "happy",
+            "😭": "sad",    "😢": "sad",    "😞": "sad",    "😔": "sad",
+            "😡": "angry",  "😤": "angry",  "😠": "angry",
+            "💀": "devastated", "😱": "shocked", "😐": "neutral",
+        }
+        for emoji, replacement in emoji_map.items():
+            text = text.replace(emoji, f" {replacement} ")
+
+        # 3. Lowercase
+        text = text.lower()
+
+        # 4. Normalize repeated characters: "soooo" -> "soo", "!!!" -> "!!"
+        text = re.sub(r"(.)\1{2,}", r"\1\1", text)
+
+        # 5. Remove punctuation (keep letters, digits, spaces)
+        text = re.sub(r"[^\w\s]", " ", text)
+
+        # 6. Split and drop empty tokens
+        tokens = [t for t in text.split() if t]
 
         return tokens
 
@@ -65,25 +91,34 @@ class MoodAnalyzer:
         """
         Compute a numeric "mood score" for the given text.
 
-        Positive words increase the score.
-        Negative words decrease the score.
+        Base logic:
+          - Each positive word token: +1
+          - Each negative word token: -1
 
-        TODO: You must choose AT LEAST ONE modeling improvement to implement.
-        For example:
-          - Handle simple negation such as "not happy" or "not bad"
-          - Count how many times each word appears instead of just presence
-          - Give some words higher weights than others (for example "hate" < "annoyed")
-          - Treat emojis or slang (":)", "lol", "💀") as strong signals
+        Enhancement — negation handling:
+          If a negation word ("not", "never", "no", "dont", "doesn", "isn",
+          "wasn", "can") appears directly before a sentiment word, the score
+          contribution of that sentiment word is flipped.
+
+          Examples:
+            "not happy"  -> "happy" would be +1, flipped to -1
+            "not bad"    -> "bad" would be -1, flipped to +1
         """
-        # TODO: Implement this method.
-        #   1. Call self.preprocess(text) to get tokens.
-        #   2. Loop over the tokens.
-        #   3. Increase the score for positive words, decrease for negative words.
-        #   4. Return the total score.
-        #
-        # Hint: if you implement negation, you may want to look at pairs of tokens,
-        # like ("not", "happy") or ("never", "fun").
-        pass
+        NEGATIONS = {"not", "never", "no", "dont", "doesn", "isn", "wasn", "can"}
+
+        tokens = self.preprocess(text)
+        score = 0
+
+        for i, token in enumerate(tokens):
+            # Check whether the previous token was a negation word
+            negated = i > 0 and tokens[i - 1] in NEGATIONS
+
+            if token in self.positive_words:
+                score += -1 if negated else 1
+            elif token in self.negative_words:
+                score += 1 if negated else -1
+
+        return score
 
     # ---------------------------------------------------------------------
     # Label prediction
@@ -93,24 +128,31 @@ class MoodAnalyzer:
         """
         Turn the numeric score for a piece of text into a mood label.
 
-        The default mapping is:
-          - score > 0  -> "positive"
-          - score < 0  -> "negative"
-          - score == 0 -> "neutral"
+        Mapping:
+          - score > 0                          -> "positive"
+          - score < 0                          -> "negative"
+          - score == 0, both pos & neg hits    -> "mixed"
+          - score == 0, no sentiment hits      -> "neutral"
 
-        TODO: You can adjust this mapping if it makes sense for your model.
-        For example:
-          - Use different thresholds (for example score >= 2 to be "positive")
-          - Add a "mixed" label for scores close to zero
-        Just remember that whatever labels you return should match the labels
-        you use in TRUE_LABELS in dataset.py if you care about accuracy.
+        Why distinguish mixed from neutral:
+          A score of 0 can mean two things — the text had no sentiment words
+          at all (neutral), or it had equal positive and negative signals that
+          cancelled out (mixed). Checking for both hit types separates them.
         """
-        # TODO: Implement this method.
-        #   1. Call self.score_text(text) to get the numeric score.
-        #   2. Return "positive" if the score is above 0.
-        #   3. Return "negative" if the score is below 0.
-        #   4. Return "neutral" otherwise.
-        pass
+        score  = self.score_text(text)
+        tokens = self.preprocess(text)
+
+        has_positive = any(t in self.positive_words for t in tokens)
+        has_negative = any(t in self.negative_words for t in tokens)
+
+        if score > 0:
+            return "positive"
+        if score < 0:
+            return "negative"
+        # score == 0
+        if has_positive and has_negative:
+            return "mixed"
+        return "neutral"
 
     # ---------------------------------------------------------------------
     # Explanations (optional but recommended)
@@ -151,3 +193,28 @@ class MoodAnalyzer:
             f"(positive: {positive_hits or '[]'}, "
             f"negative: {negative_hits or '[]'})"
         )
+
+
+if __name__ == "__main__":
+    analyzer = MoodAnalyzer()
+
+    test_cases = [
+        # (post, expected_label, note)
+        ("I love this class so much",          "positive", "plain positive"),
+        ("Today was a terrible day",           "negative", "plain negative"),
+        ("I am not happy about this",          "negative", "negation flips positive"),
+        ("not bad at all",                     "positive", "negation flips negative"),
+        ("Feeling tired but kind of hopeful",  "mixed",    "cancelled signals → mixed"),
+        ("no cap this is the best day 😭🙌",  "mixed",    "emoji sad+happy cancel → mixed"),
+        ("whatever. doesn't matter anyway",    "neutral",  "no sentiment words → neutral"),
+        ("This is fine",                       "neutral",  "no sentiment words → neutral"),
+    ]
+
+    for post, expected, note in test_cases:
+        score     = analyzer.score_text(post)
+        predicted = analyzer.predict_label(post)
+        match     = "✓" if predicted == expected else f"✗ (expected {expected})"
+        print(f"[{note}]")
+        print(f"  Input    : {post}")
+        print(f"  Score    : {score}  →  {predicted}  {match}")
+        print()
